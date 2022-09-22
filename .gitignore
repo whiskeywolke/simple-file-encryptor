@@ -128,4 +128,5 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-.temp_decrypted/
+temp_decrypted/
+data/
