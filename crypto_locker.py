@@ -11,8 +11,10 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 import argparse
 from cryptography.fernet import Fernet
+from cryptography.fernet import InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import struct
 
 
 def encrypt(read_folder: str, out_folder:str, file_name: str, fernet: Fernet):
@@ -28,7 +30,6 @@ def encrypt(read_folder: str, out_folder:str, file_name: str, fernet: Fernet):
     with open(target_file_path_write, 'wb') as encrypted_file:
         encrypted_file.write(encrypted_data)
 
-
 def decrypt(read_folder: str, out_folder: str, file_name: str, fernet: Fernet):
     target_file_path_read = os.path.join(read_folder, file_name)
     with open(target_file_path_read, 'rb') as enc_file:
@@ -40,6 +41,36 @@ def decrypt(read_folder: str, out_folder: str, file_name: str, fernet: Fernet):
 
     with open(target_file_path_write, 'wb') as dec_file:
         dec_file.write(decrypted)
+
+def encrypt_streaming(read_folder: str, out_folder:str, file_name: str, fernet: Fernet, *, block = 1 << 16):
+    fin = os.path.join(read_folder, file_name)
+    encrypted_name = fernet.encrypt(bytes(file_name, 'utf-8')).decode('utf-8')
+    fout = os.path.join(out_folder, encrypted_name)
+
+    with open(fin, 'rb') as fi, open(fout, 'wb') as fo:
+        while True:
+            chunk = fi.read(block)
+            if len(chunk) == 0:
+                break
+            enc = fernet.encrypt(chunk)
+            fo.write(struct.pack('<I', len(enc)))
+            fo.write(enc)
+            if len(chunk) < block:
+                break
+
+def decrypt_streaming(read_folder: str, out_folder:str, file_name: str, fernet: Fernet):
+    fin = os.path.join(read_folder, file_name)
+    decrypted_name = fernet.decrypt(bytes(file_name, 'utf-8')).decode('utf-8')
+    fout = os.path.join(out_folder, decrypted_name)
+
+    with open(fin, 'rb') as fi, open(fout, 'wb') as fo:
+        while True:
+            size_data = fi.read(4)
+            if len(size_data) == 0:
+                break
+            chunk = fi.read(struct.unpack('<I', size_data)[0])
+            dec = fernet.decrypt(chunk)
+            fo.write(dec)
 
 def get_key() -> Fernet:
     p = getpass.getpass(prompt='Encyption Key:')
@@ -62,16 +93,17 @@ def main(encrypt_mode:str, input_folder: str, output_folder: str):
         sys.exit(0)
 
     files = os.listdir(input_folder)
-
+    total_file_size_bytes = 0
     start_time = time.time()
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = []
         for target_file_name in files:
             if encrypt_mode == "ENCRYPT":
-                futures.append(executor.submit(encrypt, input_folder, output_folder, target_file_name, fernet))
+                futures.append(executor.submit(encrypt_streaming, input_folder, output_folder, target_file_name, fernet))
             elif encrypt_mode == "DECRYPT":
-                futures.append(executor.submit(decrypt, input_folder, output_folder, target_file_name, fernet))
+                futures.append(executor.submit(decrypt_streaming, input_folder, output_folder, target_file_name, fernet))
+            total_file_size_bytes += os.path.getsize(os.path.join(input_folder, target_file_name))
         for future in concurrent.futures.as_completed(futures):
             try:
                 res = future.result()
@@ -79,9 +111,14 @@ def main(encrypt_mode:str, input_folder: str, output_folder: str):
                     print(res)
             except requests.ConnectTimeout:
                 print("ConnectTimeout.")
+            except InvalidToken:
+                print("Invalid Key")
+
 
     execution_time = (time.time() - start_time)
-    print('Execution time in seconds: ' + str(execution_time))
+    total_file_size_mb = total_file_size_bytes / (1024**2)
+    mbps = total_file_size_mb / execution_time
+    print(f'Execution time: {str(execution_time)}s\nProcessing speed: {mbps} MB/s')
 
 
 if __name__ == "__main__":
@@ -114,6 +151,8 @@ if __name__ == "__main__":
     
     if args.output is not None:
         output_folder = args.output
+    if args.input is not None:
+        input_folder = args.input
 
     if not os.path.exists(input_folder):
         print(f"Input folder not found: {input_folder}")
