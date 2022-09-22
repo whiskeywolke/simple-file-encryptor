@@ -128,5 +128,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# temp folders
 temp_decrypted/
 data/
+data*/
+decrypted/
+encrypted/
